@@ -1,0 +1,146 @@
+---
+output: html_document
+---
+##Human Activity Recognition, Machine Learning Project
+####Bhavana Shah
+
+###Background
+The devices such as Jawbone Up, Nike FuelBand, and Fitbit now collect a large amount of data about personal activity. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, our goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+
+More information is available from the website: http://groupware.les.inf.puc-rio.br/har (section on the Weight Lifting Exercise Dataset).
+
+###Load Data
+```{r }
+#Training data set
+pmlTrainDS <- read.csv("./pml-training.csv", na.strings = c("", "NA", "NULL"))
+#Testing data set
+pmlTestDS <- read.csv("./pml-testing.csv", na.strings = c("", "NA", "NULL"))
+```
+Loading all necessary packages for the project
+```{r}
+library(caret)
+library(corrplot)
+library(randomForest)
+```
+
+```{r}
+dim(pmlTrainDS)
+```
+
+Exploring the training dataset we observe that there are quite many variables to predict the dependent 'Classe' variable, that has 5 levels [A,B,C,D,E]. In order to build accurate prediction model, we will perform initial pre-processing to identify and filter out the un-necessary, empty, highly correlated, near-zero variance variables.
+
+**Removing empty columns from dataset**
+```{r}
+filtered_pmT <- pmlTrainDS[ , colSums(is.na(pmlTrainDS)) == 0] 
+dim(filtered_pmT)
+```
+
+**Removing near-zero variance columns, using nearZeroVar() from 'caret' package**
+```{r}
+nzv <- nearZeroVar(filtered_pmT)
+filtered_pmT <- filtered_pmT[, -nzv]
+dim(filtered_pmT)
+```
+
+**Removing highly correlated variables, using 0.80 as cutoff point**
+```{r fig.height = 6.5, fig.width = 9.5}
+#create correlation matrix
+cor_pt <- cor(filtered_pmT[ , sapply(filtered_pmT, is.numeric)])
+dim(cor_pt)
+#Plotting the correlation matrix, using 'corrplot' package
+corrplot(cor_pt, order = "alphabet", tl.cex=0.7, tl.col ="steelblue")
+#Display the correlation summary, prior to removal
+summary(cor_pt[upper.tri(cor_pt)])
+#using findCorrelation() from 'caret' package, flag the predictors
+highlyCorVars <- findCorrelation(cor_pt, cutoff = 0.80)
+filtered_pmT <- filtered_pmT[, -highlyCorVars]
+#Display correlation summary, after removing predictors with absolute correlations above 0.80.
+postCorRem  <- cor(filtered_pmT[ , sapply(filtered_pmT, is.numeric)])
+summary(postCorRem[upper.tri(postCorRem)])
+dim(filtered_pmT)
+```
+
+**Removing first five columns**
+["X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "num_window"], they are not useful for prediction
+```{r}
+filtered_pmT <- filtered_pmT[, -c(1:5)]
+dim(filtered_pmT)
+```
+
+The number of predictors have reduced from 160 to 40, using all the above stated methods.
+
+###Splitting data into training and validation sets
+```{r}
+set.seed(999)
+trainIndex  <- createDataPartition(filtered_pmT$classe, p = 0.70, list = FALSE)
+training  <- filtered_pmT[trainIndex,] #70%
+dim(training)
+validSet  <- filtered_pmT[-trainIndex,] #30%
+dim(validSet)
+```
+###Creating Model using Random Forest method
+There are numerous machine learning algorithms to build prediction models. For our classification problem, we choose **Random Forest** method. Random forests are an ensemble learning method for classification (and regression) that operate by constructing a multitude of decision trees at training time and outputting the class that is the mode of the classes output by individual trees (*ref Wikipedia*). This algorithm is best-known for its accuracy, handles large datasets and large number of variables very efficiently. It provides estimates of which variables are important in the classification.
+
+First we will build the prediction model using only the training set. Then we explore importance and accuracy results.
+```{r}
+set.seed(999)
+```
+Fitting the model using randomForest algorithm
+```{r}
+rfModel <- randomForest(classe ~ ., type= "classification", data = training, ntree = 200, 
+                        importance = TRUE)
+rfModel
+```
+
+Plotting the error rates of the randomForest object, we observe that, as the number of trees increase, the error rates (miss-classification) decrease. Black line is the out-of-bag estimate and other colors denote each class error. 
+```{r fig.height = 5, fig.width = 7}
+layout(matrix(c(1,2),nrow = 1), width = c(4,1)) 
+par(mar=c(5,4,4,0)); plot(rfModel, main = "Error rates per class and OOB")
+par(mar=c(5,0,4,2)); plot(c(0,1),type = "n", axes=F, xlab = "", ylab = "")
+legend("top", colnames(rfModel$err.rate), col = 1:6, cex = 0.8, fill = 1:6)
+```
+
+####Variable Importance
+With the plot below we can see which predictors have higher importance (sorted in decreasing order of importance)
+```{r fig.height = 5, fig.width = 9}
+varImpPlot(rfModel, main = "Variable Importance Plot", cex = 0.6, col ="steelblue")
+```
+
+####Partial plots
+Partial plots gives a graphical depiction of the marginal effect of an individual variable on the class probability.
+
+Displaying plots for top 10 variables
+```{r fig.width = 9}
+imp <- importance(rfModel)
+impvar <- rownames(imp)[order(imp[, "MeanDecreaseAccuracy"], decreasing=TRUE)]
+impvarTop10 <- impvar[1:10]
+par(mfrow = c(2, 5), mar = c(1,1,1,1))
+for (i in seq_along(impvarTop10)) {
+        par(mar = c(4,2,2,2))
+        partialPlot(rfModel, training, impvarTop10[i], xlab = impvarTop10[i], main = "")
+}
+```
+
+####Out of Sample Accuracy
+Our Random Forest model had Out-of-Bag(OOB) estimates of 0.58% from training data. We can test the accuracy of the model using validation set.
+```{r}
+pred <- predict(rfModel, validSet)
+print(confusionMatrix(pred, validSet$classe))
+```
+We observe that Accuracy of 99.4% is obtained when predicting model using validation data.
+
+####Margin of predictions 
+The margin of a data point is defined as the proportion of votes for the correct class minus maximum proportion of votes for the other classes. Thus under majority votes, positive margin means correct classification.
+```{r fig.height = 4, fig.width = 6}
+plot(margin(rfModel, validSet$classe), cex = 0.7, main = "Margin of Predictions")
+```
+
+From the plot, we can observe positive margin indicating that classification is correct.
+ 
+#### Conclusion
+Finally we perform model prediction on the original test data.
+```{r}
+result <- predict(rfModel, newdata = pmlTestDS)
+result
+```
+
